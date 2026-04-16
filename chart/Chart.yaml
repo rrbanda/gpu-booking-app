@@ -1,0 +1,6 @@
+apiVersion: v2
+name: booking-app
+description: GPU Resource Booking - Reserve H200 GPU resources with MIG partitioning
+type: application
+version: 0.1.0
+appVersion: latest

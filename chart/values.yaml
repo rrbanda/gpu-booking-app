@@ -1,0 +1,29 @@
+replicas: 1
+
+server:
+  image:
+    repository: quay.io/example/booking-app-server
+    tag: latest
+  adminPassword: ""
+  bookingWindowDays: "30"
+  kueueSync:
+    enabled: true
+    interval: "60"
+    bookingDays: "0"  # 0 = rest of current week
+  storage:
+    size: 1Gi
+    storageClassName: ""
+
+client:
+  image:
+    repository: quay.io/example/booking-app-client
+    tag: latest
+
+oauth:
+  image:
+    repository: registry.redhat.io/openshift4/ose-oauth-proxy
+    tag: latest
+  cookieSecret: ""
+
+route:
+  host: ""

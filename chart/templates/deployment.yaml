@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "booking-app.fullname" . }}
+  labels:
+    {{- include "booking-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      {{- include "booking-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "booking-app.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "booking-app.fullname" . }}
+      containers:
+        - name: client
+          image: "{{ .Values.client.image.repository }}:{{ .Values.client.image.tag }}"
+          imagePullPolicy: {{ .Values.client.image.pullPolicy | default "Always" }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: HOSTNAME
+              value: "0.0.0.0"
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: production
+            - name: API_URL
+              value: "http://localhost:8080"
+        - name: server
+          image: "{{ .Values.server.image.repository }}:{{ .Values.server.image.tag }}"
+          imagePullPolicy: {{ .Values.server.image.pullPolicy | default "Always" }}
+          ports:
+            - name: api
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DB_PATH
+              value: /data/bookings.db
+            - name: BOOKING_WINDOW_DAYS
+              value: "{{ .Values.server.bookingWindowDays }}"
+            {{- if .Values.server.adminPassword }}
+            - name: ADMIN_PASSWORD
+              value: "{{ .Values.server.adminPassword }}"
+            {{- end }}
+            {{- if .Values.server.kueueSync.enabled }}
+            - name: KUEUE_SYNC_ENABLED
+              value: "true"
+            - name: KUEUE_SYNC_INTERVAL
+              value: "{{ .Values.server.kueueSync.interval }}"
+            - name: KUEUE_BOOKING_DAYS
+              value: "{{ .Values.server.kueueSync.bookingDays }}"
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+        - name: oauth-proxy
+          image: "{{ .Values.oauth.image.repository }}:{{ .Values.oauth.image.tag }}"
+          imagePullPolicy: {{ .Values.oauth.image.pullPolicy | default "Always" }}
+          ports:
+            - name: oauth
+              containerPort: 4180
+              protocol: TCP
+          args:
+            - --https-address=
+            - --http-address=:4180
+            - --upstream=http://localhost:3000
+            - --provider=openshift
+            - --openshift-service-account={{ include "booking-app.fullname" . }}
+            - --pass-user-headers=true
+            - --pass-access-token=false
+            {{- if .Values.oauth.cookieSecret }}
+            - --cookie-secret={{ .Values.oauth.cookieSecret }}
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "booking-app.fullname" . }}-data

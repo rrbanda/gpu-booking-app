@@ -1,0 +1,13 @@
+# Server
+server/server
+bookings.db*
+
+# Client
+client/node_modules/
+client/.next/
+client/out/
+
+# OS
+.DS_Store
+
+booking-reserve.png

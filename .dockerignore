@@ -1,0 +1,5 @@
+client/node_modules
+client/.next
+server/booking-app
+server/bookings.db
+*.db
