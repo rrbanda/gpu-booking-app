@@ -110,14 +110,18 @@ func syncReservations() {
 
 // getActiveReservations queries today's manual bookings and computes per-user quotas.
 // The until timestamp is based on the latest end_hour across the user's bookings.
+// Queries both today and tomorrow (UTC) so that users in UTC+ timezones who book
+// for their local "today" (which is tomorrow in UTC) still get reservations applied.
 func getActiveReservations() ([]userReservation, error) {
-	today := time.Now().Format("2006-01-02")
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+	tomorrow := now.Add(24 * time.Hour).Format("2006-01-02")
 
 	rows, err := db.Query(
-		`SELECT user, resource, COUNT(DISTINCT slot_index) as unit_count, MAX(end_hour) as max_end_hour
-		 FROM bookings WHERE date = ? AND source = 'reserved'
+		`SELECT user, resource, COUNT(DISTINCT slot_index) as unit_count, MAX(end_hour) as max_end_hour, MAX(date) as max_date
+		 FROM bookings WHERE date IN (?, ?) AND source = 'reserved'
 		 GROUP BY user, resource`,
-		today,
+		today, tomorrow,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("querying reservations: %w", err)
@@ -126,10 +130,11 @@ func getActiveReservations() ([]userReservation, error) {
 
 	userMap := map[string]map[string]int{}
 	userMaxEndHour := map[string]int{} // track latest end hour per user
+	userMaxDate := map[string]string{} // track latest booking date per user
 	for rows.Next() {
-		var user, resource string
+		var user, resource, maxDate string
 		var count, maxEndHour int
-		if err := rows.Scan(&user, &resource, &count, &maxEndHour); err != nil {
+		if err := rows.Scan(&user, &resource, &count, &maxEndHour, &maxDate); err != nil {
 			continue
 		}
 		if !isGPUResource(resource) {
@@ -143,9 +148,10 @@ func getActiveReservations() ([]userReservation, error) {
 		if maxEndHour > userMaxEndHour[user] {
 			userMaxEndHour[user] = maxEndHour
 		}
+		if maxDate > userMaxDate[user] {
+			userMaxDate[user] = maxDate
+		}
 	}
-
-	now := time.Now().UTC()
 
 	var reservations []userReservation
 	for user, resources := range userMap {
@@ -153,12 +159,17 @@ func getActiveReservations() ([]userReservation, error) {
 		if endHour <= 0 {
 			endHour = 24
 		}
+		// Parse the latest booking date to compute the until timestamp
+		bookingDate, err := time.Parse("2006-01-02", userMaxDate[user])
+		if err != nil {
+			bookingDate = now
+		}
 		var until time.Time
 		if endHour >= 24 {
-			// Midnight = start of next day
-			until = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+			// Midnight = start of next day after the booking date
+			until = bookingDate.AddDate(0, 0, 1)
 		} else {
-			until = time.Date(now.Year(), now.Month(), now.Day(), endHour, 0, 0, 0, time.UTC)
+			until = time.Date(bookingDate.Year(), bookingDate.Month(), bookingDate.Day(), endHour, 0, 0, 0, time.UTC)
 		}
 
 		res := userReservation{
