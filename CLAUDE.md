@@ -15,6 +15,8 @@ Endpoints:
 - `DELETE /api/admin?id=<id>` - admin delete any booking, requires Bearer token
 - `DELETE /api/admin` (no id) - admin delete all bookings, requires Bearer token
 - `POST /api/admin/reservations` - toggle reservation sync on/off at runtime, requires Bearer token
+- `GET /api/admin/database/export` - download the SQLite database file (flushes WAL first), requires Bearer token
+- `POST /api/admin/database/import` - upload and replace the SQLite database (multipart form, `database` field, 100MB limit), requires Bearer token
 
 The database path defaults to `./bookings.db` locally, overridden by `DB_PATH` env var (set to `/data/bookings.db` in the container via helm chart, backed by a PVC).
 
@@ -70,6 +72,7 @@ The booking reservation system for GPU resources with:
   - Bookings table with **sortable columns** (click header to sort asc/desc), **text filter** (search by user, date, resource, email, description, slot type), **Hours (UTC)** column, **Description** column, and **Source column**
   - **Delete button** per row with confirm/cancel inline (admin can delete any booking including consumed)
   - **Delete All** button with confirmation to clear all bookings (consumed bookings will be repopulated on next sync cycle)
+  - **Database Export/Import** - Export button downloads the SQLite database file; Import button uploads a replacement database file (`.db`, `.sqlite`, `.sqlite3`) with confirmation dialog
   - Auto-refresh every 30 seconds
   - Logout button
 

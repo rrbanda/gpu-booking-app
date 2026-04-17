@@ -9,11 +9,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -73,6 +75,8 @@ type Config struct {
 
 var (
 	db                *sql.DB
+	dbMu              sync.Mutex // protects db close/reopen during import
+	dbFilePath        string     // resolved path to the SQLite file
 	bookingWindowDays int
 )
 
@@ -499,6 +503,138 @@ func adminReservationToggleHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{"reservationSyncEnabled": reservationSyncEnabled})
 }
 
+func adminExportDatabase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	auth := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(auth, "Bearer ")
+	if token == "" || !verifyAdminToken(token) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	// Flush WAL to main database file
+	if _, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		log.Printf("admin export: WAL checkpoint failed: %v", err)
+		http.Error(w, `{"error":"checkpoint_failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	f, err := os.Open(dbFilePath)
+	if err != nil {
+		log.Printf("admin export: failed to open db file: %v", err)
+		http.Error(w, `{"error":"file_open_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		http.Error(w, `{"error":"file_stat_failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Disposition", "attachment; filename=bookings.db")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(w, r, "bookings.db", stat.ModTime(), f)
+}
+
+func adminImportDatabase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	auth := r.Header.Get("Authorization")
+	token := strings.TrimPrefix(auth, "Bearer ")
+	if token == "" || !verifyAdminToken(token) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	// Limit upload to 100MB
+	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+
+	file, _, err := r.FormFile("database")
+	if err != nil {
+		http.Error(w, `{"error":"missing_database_field"}`, http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Write to temp file
+	tmpFile, err := os.CreateTemp("", "bookings-import-*.db")
+	if err != nil {
+		http.Error(w, `{"error":"temp_file_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, file); err != nil {
+		tmpFile.Close()
+		http.Error(w, `{"error":"upload_copy_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	tmpFile.Close()
+
+	// Lock, close current db, replace file, reopen
+	dbMu.Lock()
+	defer dbMu.Unlock()
+
+	db.Close()
+
+	// Copy temp file to db path
+	src, err := os.Open(tmpPath)
+	if err != nil {
+		// Reopen original on failure
+		initDB(dbFilePath)
+		http.Error(w, `{"error":"import_open_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	dst, err := os.Create(dbFilePath)
+	if err != nil {
+		src.Close()
+		initDB(dbFilePath)
+		http.Error(w, `{"error":"import_create_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		src.Close()
+		dst.Close()
+		initDB(dbFilePath)
+		http.Error(w, `{"error":"import_copy_failed"}`, http.StatusInternalServerError)
+		return
+	}
+	src.Close()
+	dst.Close()
+
+	// Remove WAL/SHM files
+	os.Remove(dbFilePath + "-wal")
+	os.Remove(dbFilePath + "-shm")
+
+	// Reopen database
+	if err := initDB(dbFilePath); err != nil {
+		log.Printf("admin import: failed to reopen database: %v", err)
+		http.Error(w, `{"error":"reopen_failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	log.Println("admin: database imported successfully")
+
+	go syncReservations()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "imported"})
+}
+
 func bulkBookingHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -724,11 +860,12 @@ func main() {
 		log.Fatalf("failed to generate admin secret: %v", err)
 	}
 
-	if err := initDB(*dbPath); err != nil {
+	dbFilePath = *dbPath
+	if err := initDB(dbFilePath); err != nil {
 		log.Fatalf("failed to initialize database: %v", err)
 	}
 	defer db.Close()
-	log.Printf("database initialized at %s", *dbPath)
+	log.Printf("database initialized at %s", dbFilePath)
 
 	initK8sClient()
 	initKueueSync()
@@ -740,6 +877,8 @@ func main() {
 	mux.HandleFunc("/api/bookings", bookingsHandler)
 	mux.HandleFunc("/api/admin/login", adminLoginHandler)
 	mux.HandleFunc("/api/admin/reservations", adminReservationToggleHandler)
+	mux.HandleFunc("/api/admin/database/export", adminExportDatabase)
+	mux.HandleFunc("/api/admin/database/import", adminImportDatabase)
 	mux.HandleFunc("/api/admin", adminHandler)
 
 	addr := fmt.Sprintf(":%s", *port)

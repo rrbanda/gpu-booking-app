@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { getAdminData, logoutAdmin, adminDeleteBooking, adminDeleteAllBookings, adminToggleReservationSync } from "../actions";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { getAdminData, logoutAdmin, adminDeleteBooking, adminDeleteAllBookings, adminToggleReservationSync, adminExportDatabase, adminImportDatabase } from "../actions";
 import type { Booking, BookingConfig } from "../actions";
 
 type SortField = "id" | "user" | "resource" | "slotIndex" | "date" | "slotType" | "createdAt";
@@ -28,6 +28,10 @@ export default function AdminPage() {
   const [reservationSync, setReservationSync] = useState(true);
   const [togglingSync, setTogglingSync] = useState(false);
   const [utcNow, setUtcNow] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [dbMessage, setDbMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Filter
   const [filter, setFilter] = useState("");
@@ -106,6 +110,48 @@ export default function AdminPage() {
       setError(result.error);
     }
     setTogglingSync(false);
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    setDbMessage(null);
+    const result = await adminExportDatabase();
+    if (result.success) {
+      const bytes = Uint8Array.from(atob(result.data), (c) => c.charCodeAt(0));
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = result.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      setDbMessage({ type: "success", text: "Database exported successfully" });
+    } else {
+      setDbMessage({ type: "error", text: result.error });
+    }
+    setExporting(false);
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!confirm(`Import "${file.name}"? This will replace the current database.`)) {
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
+    setImporting(true);
+    setDbMessage(null);
+    const formData = new FormData();
+    formData.append("database", file);
+    const result = await adminImportDatabase(formData);
+    if (result.success) {
+      setDbMessage({ type: "success", text: "Database imported successfully" });
+      await fetchData();
+    } else {
+      setDbMessage({ type: "error", text: result.error });
+    }
+    setImporting(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleSort = (field: SortField) => {
@@ -283,6 +329,37 @@ export default function AdminPage() {
               </span>
             </button>
           ))}
+        </div>
+
+        {/* Database management */}
+        <div className="flex items-center gap-3 mb-6">
+          <span className="text-sm text-rh-gray-50 mr-1">Database:</span>
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="text-sm px-3 py-1.5 rounded-lg font-medium bg-white border border-rh-gray-20 text-rh-gray-60 hover:border-rh-gray-40 transition-colors disabled:opacity-50"
+          >
+            {exporting ? "Exporting..." : "Export"}
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="text-sm px-3 py-1.5 rounded-lg font-medium bg-white border border-rh-gray-20 text-rh-gray-60 hover:border-rh-gray-40 transition-colors disabled:opacity-50"
+          >
+            {importing ? "Importing..." : "Import"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".db,.sqlite,.sqlite3"
+            onChange={handleImport}
+            className="hidden"
+          />
+          {dbMessage && (
+            <span className={`text-sm ${dbMessage.type === "success" ? "text-green-600" : "text-rh-red-50"}`}>
+              {dbMessage.text}
+            </span>
+          )}
         </div>
 
         {/* Bookings table */}

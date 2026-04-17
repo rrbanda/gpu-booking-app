@@ -10,4 +10,5 @@ client/out/
 # OS
 .DS_Store
 
-booking-reserve.png
+.vscode/
+.claude/

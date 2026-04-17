@@ -297,6 +297,60 @@ export async function adminToggleReservationSync(
   }
 }
 
+export async function adminExportDatabase(): Promise<
+  { success: true; data: string; filename: string } | { success: false; error: string }
+> {
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get("booking-admin-session")?.value || "";
+    const res = await fetch(`${API_URL}/api/admin/database/export`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.status === 401) {
+      return { success: false, error: "unauthorized" };
+    }
+    if (!res.ok) {
+      return { success: false, error: "Failed to export database" };
+    }
+    const buffer = await res.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const filenameMatch = disposition.match(/filename=(.+)/);
+    const filename = filenameMatch ? filenameMatch[1] : "bookings.db";
+    return { success: true, data: base64, filename };
+  } catch {
+    return { success: false, error: "Failed to connect to booking service" };
+  }
+}
+
+export async function adminImportDatabase(
+  formData: FormData
+): Promise<{ success: true } | { success: false; error: string }> {
+  try {
+    const cookieStore = await cookies();
+    const token = cookieStore.get("booking-admin-session")?.value || "";
+    const res = await fetch(`${API_URL}/api/admin/database/import`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.status === 401) {
+      return { success: false, error: "unauthorized" };
+    }
+    if (!res.ok) {
+      try {
+        const body = await res.json();
+        return { success: false, error: body.error || "Failed to import database" };
+      } catch {
+        return { success: false, error: "Failed to import database" };
+      }
+    }
+    return { success: true };
+  } catch {
+    return { success: false, error: "Failed to connect to booking service" };
+  }
+}
+
 export async function getAdminData(): Promise<AdminResult | AdminError> {
   try {
     const cookieStore = await cookies();
