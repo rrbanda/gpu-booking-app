@@ -12,3 +12,4 @@ client/out/
 
 .vscode/
 .claude/
+.playwright-cli/
