@@ -128,21 +128,24 @@ func initK8sInCluster() bool {
 }
 
 func initK8sFromKubeconfig() bool {
-	// Use kubectl/oc to extract the current context's config as JSON.
-	// This handles all kubeconfig complexity (merged files, exec providers, etc.)
-	out, err := exec.Command("kubectl", "config", "view", "--minify", "--flatten", "--raw", "-o", "json").Output()
-	if err != nil {
-		out, err = exec.Command("oc", "config", "view", "--minify", "--flatten", "--raw", "-o", "json").Output()
-		if err != nil {
-			return false
-		}
+	kubeconfigPath := os.Getenv("KUBECONFIG")
+	if kubeconfigPath == "" {
+		kubeconfigPath = os.ExpandEnv("$HOME/.kube/config")
 	}
 
+	data, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		return false
+	}
+
+	// Parse the kubeconfig YAML/JSON by extracting fields with simple parsing.
+	// Try JSON first (kubectl output), then extract YAML values.
 	var kc struct {
 		Clusters []struct {
 			Cluster struct {
 				Server                   string `json:"server"`
 				CertificateAuthorityData string `json:"certificate-authority-data"`
+				InsecureSkipTLSVerify    bool   `json:"insecure-skip-tls-verify"`
 			} `json:"cluster"`
 		} `json:"clusters"`
 		Users []struct {
@@ -151,9 +154,22 @@ func initK8sFromKubeconfig() bool {
 			} `json:"user"`
 		} `json:"users"`
 	}
-	if err := json.Unmarshal(out, &kc); err != nil {
-		log.Printf("k8s client: failed to parse kubeconfig: %v", err)
-		return false
+
+	if err := json.Unmarshal(data, &kc); err != nil {
+		// File is YAML -- convert simple kubeconfig YAML to JSON via kubectl if available,
+		// otherwise do a basic line-by-line parse for the fields we need.
+		out, cmdErr := exec.Command("kubectl", "config", "view", "--minify", "--flatten", "--raw", "-o", "json", "--kubeconfig", kubeconfigPath).Output()
+		if cmdErr != nil {
+			out, cmdErr = exec.Command("oc", "config", "view", "--minify", "--flatten", "--raw", "-o", "json", "--kubeconfig", kubeconfigPath).Output()
+		}
+		if cmdErr != nil {
+			// Fall back to simple YAML line parsing
+			return initK8sFromYAML(data)
+		}
+		if err := json.Unmarshal(out, &kc); err != nil {
+			log.Printf("k8s client: failed to parse kubeconfig JSON: %v", err)
+			return false
+		}
 	}
 
 	if len(kc.Clusters) == 0 || kc.Clusters[0].Cluster.Server == "" {
@@ -168,7 +184,9 @@ func initK8sFromKubeconfig() bool {
 	k8sToken = kc.Users[0].User.Token
 
 	tlsConfig := &tls.Config{}
-	if caData := kc.Clusters[0].Cluster.CertificateAuthorityData; caData != "" {
+	if kc.Clusters[0].Cluster.InsecureSkipTLSVerify {
+		tlsConfig.InsecureSkipVerify = true
+	} else if caData := kc.Clusters[0].Cluster.CertificateAuthorityData; caData != "" {
 		caCert, err := base64.StdEncoding.DecodeString(caData)
 		if err == nil {
 			pool, _ := x509.SystemCertPool()
@@ -186,6 +204,43 @@ func initK8sFromKubeconfig() bool {
 	}
 
 	log.Printf("k8s client: using kubeconfig (%s)", k8sHost)
+	return true
+}
+
+// initK8sFromYAML parses a simple kubeconfig YAML without external tools.
+func initK8sFromYAML(data []byte) bool {
+	lines := strings.Split(string(data), "\n")
+	var server, token string
+	skipTLS := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "server:") {
+			server = strings.TrimSpace(strings.TrimPrefix(trimmed, "server:"))
+		} else if strings.HasPrefix(trimmed, "token:") {
+			token = strings.TrimSpace(strings.TrimPrefix(trimmed, "token:"))
+		} else if strings.HasPrefix(trimmed, "insecure-skip-tls-verify:") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "insecure-skip-tls-verify:"))
+			skipTLS = val == "true"
+		}
+	}
+	if server == "" || token == "" {
+		return false
+	}
+
+	k8sHost = server
+	k8sToken = token
+
+	tlsConfig := &tls.Config{}
+	if skipTLS {
+		tlsConfig.InsecureSkipVerify = true
+	}
+
+	k8sHTTPClient = &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+	}
+
+	log.Printf("k8s client: using kubeconfig YAML (%s)", k8sHost)
 	return true
 }
 
