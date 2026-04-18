@@ -5,24 +5,12 @@ import { getBookings, createBooking, cancelBooking, createBulkBooking } from "./
 import type { Booking, GPUResource } from "./actions";
 import GpuUsagePanel from "./GpuUsagePanel";
 
-const GPU_RESOURCES: GPUResource[] = [
-  { name: "H200 Full GPU", type: "nvidia.com/gpu", count: 8, available: 8 },
-  { name: "MIG 3g.71gb", type: "nvidia.com/mig-3g.71gb", count: 8, available: 8 },
-  { name: "MIG 2g.35gb", type: "nvidia.com/mig-2g.35gb", count: 8, available: 8 },
-  { name: "MIG 1g.18gb", type: "nvidia.com/mig-1g.18gb", count: 16, available: 16 },
+const FALLBACK_GPU_RESOURCES: GPUResource[] = [
+  { name: "H200 Full GPU", type: "nvidia.com/gpu", count: 8, share: 0.0625, gpuEquivalent: 1.0 },
+  { name: "MIG 3g.71gb", type: "nvidia.com/mig-3g.71gb", count: 8, share: 0.03125, gpuEquivalent: 0.5 },
+  { name: "MIG 2g.35gb", type: "nvidia.com/mig-2g.35gb", count: 8, share: 0.015625, gpuEquivalent: 0.25 },
+  { name: "MIG 1g.18gb", type: "nvidia.com/mig-1g.18gb", count: 16, share: 0.0078125, gpuEquivalent: 0.125 },
 ];
-
-// GPU equivalent weight per resource type (relative to 1 physical H200)
-const GPU_EQUIVALENT: Record<string, number> = {
-  "nvidia.com/gpu": 1.0,
-  "nvidia.com/mig-3g.71gb": 0.5,
-  "nvidia.com/mig-2g.35gb": 0.25,
-  "nvidia.com/mig-1g.18gb": 0.125,
-};
-
-const TOTAL_GPU_EQUIVALENTS = GPU_RESOURCES.reduce(
-  (sum, r) => sum + r.count * (GPU_EQUIVALENT[r.type] || 0), 0
-);
 
 const SLOT_TYPE = "full";
 
@@ -161,11 +149,12 @@ interface BookingModalProps {
   endDate: string;
   bookings: Booking[];
   editBooking?: Booking;
+  gpuResources: GPUResource[];
   onClose: () => void;
   onSubmit: (resources: Record<string, number>, startDate: string, endDate: string, description: string, startHourUtc: number, endHourUtc: number) => Promise<void>;
 }
 
-function BookingModal({ startDate, endDate, bookings, editBooking, onClose, onSubmit }: BookingModalProps) {
+function BookingModal({ startDate, endDate, bookings, editBooking, gpuResources, onClose, onSubmit }: BookingModalProps) {
   const [resources, setResources] = useState<Record<string, number>>(
     editBooking ? { [editBooking.resource]: 1 } : {}
   );
@@ -197,7 +186,7 @@ function BookingModal({ startDate, endDate, bookings, editBooking, onClose, onSu
 
   // Calculate available units per resource for the date range
   const getMaxAvailable = (resourceType: string): number => {
-    const gpu = GPU_RESOURCES.find((r) => r.type === resourceType);
+    const gpu = gpuResources.find((r) => r.type === resourceType);
     if (!gpu) return 0;
 
     // Find the date in the range with the fewest available slots
@@ -238,8 +227,11 @@ function BookingModal({ startDate, endDate, bookings, editBooking, onClose, onSu
   };
 
   // Calculate GPU equivalents for the selection
+  const gpuEquivMap: Record<string, number> = {};
+  for (const r of gpuResources) gpuEquivMap[r.type] = r.gpuEquivalent;
+
   const gpuEquivTotal = Object.entries(resources).reduce(
-    (sum, [type, count]) => sum + count * (GPU_EQUIVALENT[type] || 0), 0
+    (sum, [type, count]) => sum + count * (gpuEquivMap[type] || 0), 0
   );
 
   return (
@@ -317,10 +309,10 @@ function BookingModal({ startDate, endDate, bookings, editBooking, onClose, onSu
           <div>
             <label className="block text-sm font-semibold text-rh-gray-70 mb-2">Resources</label>
             <div className="space-y-2">
-              {GPU_RESOURCES.map((r) => {
+              {gpuResources.map((r) => {
                 const count = resources[r.type] || 0;
                 const maxAvail = getMaxAvailable(r.type);
-                const equiv = GPU_EQUIVALENT[r.type] || 0;
+                const equiv = r.gpuEquivalent;
 
                 return (
                   <div
@@ -425,7 +417,8 @@ export default function BookingPage() {
   const [loading, setLoading] = useState(true);
   const [reserving, setReserving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedResources, setSelectedResources] = useState<string[]>([GPU_RESOURCES[0].type]);
+  const [gpuResources, setGpuResources] = useState<GPUResource[]>(FALLBACK_GPU_RESOURCES);
+  const [selectedResources, setSelectedResources] = useState<string[]>([FALLBACK_GPU_RESOURCES[0].type]);
   const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
   const [bookingWindowDays, setBookingWindowDays] = useState(DEFAULT_BOOKING_WINDOW_DAYS);
   const [utcNow, setUtcNow] = useState("");
@@ -444,12 +437,23 @@ export default function BookingPage() {
   const [viewMonth, setViewMonth] = useState(now.getMonth());
   const [selectedDates, setSelectedDates] = useState<string[]>([todayStr()]);
 
-  const selectedResourceObjects = GPU_RESOURCES.filter((r) => selectedResources.includes(r.type));
+  const selectedResourceObjects = gpuResources.filter((r) => selectedResources.includes(r.type));
   const monthDates = getMonthDates(viewYear, viewMonth);
   const monthStartOffset = getMonthStartOffset(viewYear, viewMonth);
 
   // Grid only shows selected dates
   const gridDates = useMemo(() => [...selectedDates].sort(), [selectedDates]);
+
+  const gpuEquivalentMap = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const r of gpuResources) m[r.type] = r.gpuEquivalent;
+    return m;
+  }, [gpuResources]);
+
+  const totalGpuEquivalents = useMemo(
+    () => gpuResources.reduce((sum, r) => sum + r.count * r.gpuEquivalent, 0),
+    [gpuResources]
+  );
 
   const fetchBookings = useCallback(async () => {
     const result = await getBookings();
@@ -468,6 +472,9 @@ export default function BookingPage() {
       .then((data) => {
         if (data.bookingWindowDays) {
           setBookingWindowDays(data.bookingWindowDays);
+        }
+        if (Array.isArray(data.resources) && data.resources.length > 0) {
+          setGpuResources(data.resources);
         }
       })
       .catch(() => {});
@@ -683,11 +690,11 @@ export default function BookingPage() {
   // Calculate GPU equivalent usage for a date (unique units booked per resource, weighted)
   const getDateGpuUsage = (date: string): number => {
     let total = 0;
-    for (const r of GPU_RESOURCES) {
+    for (const r of gpuResources) {
       const units = new Set(
         bookings.filter((b) => b.resource === r.type && b.date === date).map((b) => b.slotIndex)
       );
-      total += units.size * (GPU_EQUIVALENT[r.type] || 0);
+      total += units.size * (gpuEquivalentMap[r.type] || 0);
     }
     return total;
   };
@@ -755,7 +762,7 @@ export default function BookingPage() {
 
           {/* Resource selector (Ctrl+click to multi-select) */}
           <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-            {GPU_RESOURCES.map((r) => {
+            {gpuResources.map((r) => {
               const isSelected = selectedResources.includes(r.type);
               return (
                 <div
@@ -807,7 +814,7 @@ export default function BookingPage() {
         {/* GPU Usage Overview */}
         <GpuUsagePanel
           bookings={bookings}
-          resources={GPU_RESOURCES}
+          resources={gpuResources}
           selectedDate={selectedDates[0] || todayStr()}
         />
 
@@ -908,11 +915,11 @@ export default function BookingPage() {
                   </span>
                   {(bookable || (past && hasBookings)) && gpuUsage > 0 && (
                     <span className={`text-[9px] px-1.5 py-0 rounded-full mt-0.5 ${
-                      gpuUsage >= TOTAL_GPU_EQUIVALENTS
+                      gpuUsage >= totalGpuEquivalents
                         ? "bg-rh-red-50 text-white"
                         : "bg-rh-gray-80 text-white"
                     }`}>
-                      {gpuUsage % 1 === 0 ? gpuUsage : gpuUsage.toFixed(1)}/{TOTAL_GPU_EQUIVALENTS}
+                      {gpuUsage % 1 === 0 ? gpuUsage : gpuUsage.toFixed(1)}/{totalGpuEquivalents}
                     </span>
                   )}
                 </button>
@@ -1247,6 +1254,7 @@ export default function BookingPage() {
           endDate={editBooking?.date || [...selectedDates].sort()[selectedDates.length - 1]}
           bookings={bookings}
           editBooking={editBooking || undefined}
+          gpuResources={gpuResources}
           onClose={() => { setShowBookingModal(false); setEditBooking(null); }}
           onSubmit={handleBulkBooking}
         />

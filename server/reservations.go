@@ -14,24 +14,7 @@ import (
 	"time"
 )
 
-// Resource pool matching applications/rbac/values.yaml totalResources.h200
-type gpuSpec struct {
-	Count int
-	Share float64
-}
-
-var h200Resources = map[string]gpuSpec{
-	"nvidia.com/gpu":         {Count: 8, Share: 0.0625},
-	"nvidia.com/mig-3g.71gb": {Count: 8, Share: 0.03125},
-	"nvidia.com/mig-2g.35gb": {Count: 8, Share: 0.015625},
-	"nvidia.com/mig-1g.18gb": {Count: 16, Share: 0.0078125},
-}
-
-const (
-	h200TotalCPU             = 316
-	h200TotalMemory          = 3460 // Gi
-	reservationCleanInterval = 10 * time.Minute
-)
+const reservationCleanInterval = 10 * time.Minute
 
 // reservationSyncEnabled controls whether reservation sync and cleanup are active.
 // Toggled at runtime via the admin API. Defaults to true.
@@ -178,13 +161,13 @@ func getActiveReservations() ([]userReservation, error) {
 			Until:     until.Unix(),
 		}
 		for gpuRes, count := range resources {
-			spec, ok := h200Resources[gpuRes]
+			spec, ok := gpuSpecByType(gpuRes)
 			if !ok {
 				continue
 			}
 			share := float64(count) * spec.Share
-			res.CPU += int(math.Floor(share * h200TotalCPU))
-			res.Memory += int(math.Floor(share * h200TotalMemory))
+			res.CPU += int(math.Floor(share * float64(totalCPU)))
+			res.Memory += int(math.Floor(share * float64(totalMemory)))
 		}
 		reservations = append(reservations, res)
 	}
@@ -371,11 +354,11 @@ func applyUserReservation(res userReservation) error {
 // all active reservations, so the shared pool reflects what's actually available.
 func applyCohortRemaining(reservations []userReservation) error {
 	// Start with full resource pool
-	remainingCPU := h200TotalCPU
-	remainingMem := h200TotalMemory
+	remainingCPU := totalCPU
+	remainingMem := totalMemory
 	remainingGPUs := map[string]int{}
-	for res, spec := range h200Resources {
-		remainingGPUs[res] = spec.Count
+	for _, spec := range gpuResourceSpecs {
+		remainingGPUs[spec.Type] = spec.Count
 	}
 
 	// Subtract each user's reservation

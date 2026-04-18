@@ -347,14 +347,6 @@ func parseResourceCount(total string) int {
 	return 0
 }
 
-func isGPUResource(name string) bool {
-	switch name {
-	case "nvidia.com/gpu", "nvidia.com/mig-3g.71gb", "nvidia.com/mig-2g.35gb", "nvidia.com/mig-1g.18gb":
-		return true
-	}
-	return false
-}
-
 func getBookingDates() []string {
 	today := time.Now()
 	var days int
