@@ -90,6 +90,16 @@ mcp_toolset = McpToolset(
     connection_params=StreamableHTTPConnectionParams(url=MCP_URL),
 )
 
+availability_toolset = McpToolset(
+    connection_params=StreamableHTTPConnectionParams(url=MCP_URL),
+    tool_filter=["get_config", "list_bookings", "check_availability"],
+)
+
+reservation_toolset = McpToolset(
+    connection_params=StreamableHTTPConnectionParams(url=MCP_URL),
+    tool_filter=["create_booking", "bulk_book", "cancel_booking", "check_availability"],
+)
+
 availability_agent = LlmAgent(
     model=MODEL,
     name="availability_agent",
@@ -98,8 +108,7 @@ availability_agent = LlmAgent(
         "listing bookings, and computing availability for specific resources and dates."
     ),
     instruction=AVAILABILITY_INSTRUCTION,
-    tools=[mcp_toolset],
-    tool_filter=["get_config", "list_bookings", "check_availability"],
+    tools=[availability_toolset],
 )
 
 reservation_agent = LlmAgent(
@@ -110,8 +119,7 @@ reservation_agent = LlmAgent(
         "and cancelling existing bookings. Confirms actions with the user before executing."
     ),
     instruction=RESERVATION_INSTRUCTION,
-    tools=[mcp_toolset],
-    tool_filter=["create_booking", "bulk_book", "cancel_booking", "check_availability"],
+    tools=[reservation_toolset],
 )
 
 root_agent = LlmAgent(
