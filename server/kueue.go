@@ -74,8 +74,14 @@ var (
 )
 
 // initK8sClient sets up the Kubernetes API client.
-// Tries in-cluster config first, then falls back to KUBECONFIG.
+// If KUBECONFIG is set, uses it directly (for remote cluster access).
+// Otherwise tries in-cluster config first, then falls back to default kubeconfig paths.
 func initK8sClient() {
+	if os.Getenv("KUBECONFIG") != "" {
+		if initK8sFromKubeconfig() {
+			return
+		}
+	}
 	if initK8sInCluster() {
 		return
 	}
