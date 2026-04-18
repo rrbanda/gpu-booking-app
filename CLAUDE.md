@@ -4,13 +4,15 @@
 
 Written in golang. Uses SQLite for persistent booking storage via `github.com/mattn/go-sqlite3`.
 
+GPU resource definitions (types, counts, share ratios, GPU equivalents) are centralized in `server/config.go` and served to the frontend via `GET /api/config`. The frontend loads resources dynamically on mount.
+
 Endpoints:
 - `GET /api/config` - public GPU resource configuration (includes `bookingWindowDays`)
 - `GET /api/bookings` - list all bookings (includes `source` field, `activeReservations`, and `currentUser`)
 - `POST /api/bookings` - create a single booking (user identity from `X-Forwarded-User` header)
 - `POST /api/bookings/bulk` - create bookings across multiple resources, dates, and hours in one request. Auto-finds available slot indices, evicts consumed bookings, skips reserved ones. Accepts `resources` (map of resource type to count), `startDate`, `endDate`, `description`, `startHour`, `endHour` (UTC).
 - `DELETE /api/bookings?id=<id>` - cancel a booking (owner or admin only; consumed bookings cannot be cancelled by normal users, returns `403 consumed_booking`)
-- `POST /api/admin/login` - authenticate with admin password, returns HMAC-signed token
+- `POST /api/admin/login` - authenticate with admin password, returns HMAC-signed token (24h TTL enforced server-side)
 - `GET /api/admin` - admin data, requires `Authorization: Bearer <token>` (all bookings + config)
 - `DELETE /api/admin?id=<id>` - admin delete any booking, requires Bearer token
 - `DELETE /api/admin` (no id) - admin delete all bookings, requires Bearer token

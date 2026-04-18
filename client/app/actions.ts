@@ -9,12 +9,15 @@ export interface GPUResource {
   name: string;
   type: string;
   count: number;
-  available: number;
+  share: number;
+  gpuEquivalent: number;
 }
 
 export interface BookingConfig {
   resources: GPUResource[];
   bookingWindowDays: number;
+  totalCpu: number;
+  totalMemory: number;
 }
 
 export interface Booking {

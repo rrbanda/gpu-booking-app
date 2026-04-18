@@ -27,13 +27,6 @@ var (
 	devUser       string // fallback user identity for local dev (no OAuth proxy)
 )
 
-type GPUResource struct {
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Count     int    `json:"count"`
-	Available int    `json:"available"`
-}
-
 type Booking struct {
 	ID          string `json:"id"`
 	User        string `json:"user"`
@@ -68,29 +61,12 @@ type BulkBookingRequest struct {
 	EndHour     int            `json:"endHour"`   // UTC hour 1-24 (24 = midnight next day)
 }
 
-type Config struct {
-	Resources         []GPUResource `json:"resources"`
-	BookingWindowDays int           `json:"bookingWindowDays"`
-}
-
 var (
 	db                *sql.DB
 	dbMu              sync.Mutex // protects db close/reopen during import
 	dbFilePath        string     // resolved path to the SQLite file
 	bookingWindowDays int
 )
-
-func getConfig() Config {
-	return Config{
-		Resources: []GPUResource{
-			{Name: "H200 Full GPU", Type: "nvidia.com/gpu", Count: 8, Available: 8},
-			{Name: "MIG 3g.71gb", Type: "nvidia.com/mig-3g.71gb", Count: 8, Available: 8},
-			{Name: "MIG 2g.35gb", Type: "nvidia.com/mig-2g.35gb", Count: 8, Available: 8},
-			{Name: "MIG 1g.18gb", Type: "nvidia.com/mig-1g.18gb", Count: 16, Available: 16},
-		},
-		BookingWindowDays: bookingWindowDays,
-	}
-}
 
 func initDB(dbPath string) error {
 	var err error
@@ -357,15 +333,38 @@ func generateAdminToken() string {
 	return ts + "." + sig
 }
 
+const adminTokenTTL int64 = 86400 // 24 hours
+
 func verifyAdminToken(token string) bool {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
+		return false
+	}
+	ts, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return false
+	}
+	if time.Now().Unix()-ts > adminTokenTTL {
 		return false
 	}
 	mac := hmac.New(sha256.New, adminSecret)
 	mac.Write([]byte(parts[0]))
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(parts[1]), []byte(expected))
+}
+
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token == "" || !verifyAdminToken(token) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+			return
+		}
+		next(w, r)
+	}
 }
 
 func adminLoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -395,16 +394,6 @@ func adminLoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func adminHandler(w http.ResponseWriter, r *http.Request) {
-	// Verify admin token
-	auth := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == "" || !verifyAdminToken(token) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
-		return
-	}
-
 	switch r.Method {
 	case http.MethodDelete:
 		adminDeleteBooking(w, r)
@@ -479,15 +468,6 @@ func adminReservationToggleHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	auth := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == "" || !verifyAdminToken(token) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
-		return
-	}
-
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
@@ -506,15 +486,6 @@ func adminReservationToggleHandler(w http.ResponseWriter, r *http.Request) {
 func adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	auth := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == "" || !verifyAdminToken(token) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 		return
 	}
 
@@ -547,15 +518,6 @@ func adminExportDatabase(w http.ResponseWriter, r *http.Request) {
 func adminImportDatabase(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	auth := r.Header.Get("Authorization")
-	token := strings.TrimPrefix(auth, "Bearer ")
-	if token == "" || !verifyAdminToken(token) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 		return
 	}
 
@@ -876,10 +838,10 @@ func main() {
 	mux.HandleFunc("/api/bookings/bulk", bulkBookingHandler)
 	mux.HandleFunc("/api/bookings", bookingsHandler)
 	mux.HandleFunc("/api/admin/login", adminLoginHandler)
-	mux.HandleFunc("/api/admin/reservations", adminReservationToggleHandler)
-	mux.HandleFunc("/api/admin/database/export", adminExportDatabase)
-	mux.HandleFunc("/api/admin/database/import", adminImportDatabase)
-	mux.HandleFunc("/api/admin", adminHandler)
+	mux.HandleFunc("/api/admin/reservations", requireAdmin(adminReservationToggleHandler))
+	mux.HandleFunc("/api/admin/database/export", requireAdmin(adminExportDatabase))
+	mux.HandleFunc("/api/admin/database/import", requireAdmin(adminImportDatabase))
+	mux.HandleFunc("/api/admin", requireAdmin(adminHandler))
 
 	addr := fmt.Sprintf(":%s", *port)
 	log.Printf("booking-app server starting on %s", addr)
