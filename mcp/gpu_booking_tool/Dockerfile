@@ -16,9 +16,10 @@ RUN uv sync --frozen --no-dev
 
 FROM python:3.13-slim
 
-RUN groupadd -g 1001 appuser && useradd -u 1001 -g 1001 -m appuser
+RUN groupadd -g 0 appuser || true
 
-COPY --from=builder --chown=1001:1001 /app /app
+COPY --from=builder /app /app
+RUN chgrp -R 0 /app && chmod -R g=u /app
 WORKDIR /app
 
 ENV PATH="/app/.venv/bin:$PATH"
