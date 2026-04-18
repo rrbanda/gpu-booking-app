@@ -1,3 +1,6 @@
+# Secrets are in secrets.yaml.example -- copy, fill in values, apply separately.
+# oc apply -f secrets.yaml
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -8,42 +11,6 @@ spec:
   resources:
     requests:
       storage: 1Gi
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: gpu-booking-server-config
-type: Opaque
-stringData:
-  ADMIN_PASSWORD: "changeme"
-  BOOKING_WINDOW_DAYS: "30"
-  KUEUE_SYNC_ENABLED: "true"
-  KUEUE_SYNC_INTERVAL: "60"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: rhai-tmm-kubeconfig
-type: Opaque
-stringData:
-  config: |
-    apiVersion: v1
-    kind: Config
-    clusters:
-    - cluster:
-        server: https://api.ocp.cloud.rhai-tmm.dev:6443
-        insecure-skip-tls-verify: true
-      name: rhai-tmm
-    contexts:
-    - context:
-        cluster: rhai-tmm
-        namespace: user-rbanda
-      name: rhai-tmm
-    current-context: rhai-tmm
-    users:
-    - name: rhai-tmm
-      user:
-        token: REPLACE_WITH_BEARER_TOKEN
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -65,9 +32,20 @@ spec:
         app: gpu-booking-server
         kagenti.io/inject: enabled
     spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: server
+        # Pin to a versioned tag for reproducible deploys (e.g., :v1.0.0)
         image: image-registry.openshift-image-registry.svc:5000/gpu-booking-test/gpu-booking-server:latest
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
         ports:
         - containerPort: 8080
           name: http
@@ -96,12 +74,13 @@ spec:
             memory: 1Gi
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8080
           initialDelaySeconds: 5
           periodSeconds: 10
         livenessProbe:
-          tcpSocket:
+          httpGet:
+            path: /healthz
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 30
@@ -111,7 +90,8 @@ spec:
           claimName: gpu-booking-db
       - name: kubeconfig
         secret:
-          secretName: rhai-tmm-kubeconfig
+          # Rename this secret to match your cluster (see secrets.yaml.example)
+          secretName: gpu-cluster-kubeconfig
 ---
 apiVersion: v1
 kind: Service

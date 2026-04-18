@@ -26,8 +26,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-setup_otel()
-
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/mcp")
 MODEL = os.getenv("ADK_MODEL", "gemini-2.5-flash")
 
@@ -148,6 +146,8 @@ def main():
     """Entry point: expose the agent as an A2A server via uvicorn."""
     import uvicorn
     from google.adk.a2a.utils.agent_to_a2a import to_a2a
+
+    setup_otel()
 
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8001"))

@@ -5,15 +5,23 @@ import os
 
 logger = logging.getLogger(__name__)
 
-OTEL_ENDPOINT = os.getenv(
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "http://otel-collector.kagenti-system.svc.cluster.local:4317",
-)
-SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "gpu-booking-agent")
-
 
 def setup_otel() -> None:
-    """Configure OpenTelemetry tracing with OTLP exporter."""
+    """Configure OpenTelemetry tracing with OTLP exporter.
+
+    Reads configuration from standard OTEL environment variables:
+      OTEL_EXPORTER_OTLP_ENDPOINT   -- collector endpoint (empty = disabled)
+      OTEL_SERVICE_NAME              -- service name for traces
+      OTEL_EXPORTER_OTLP_INSECURE   -- "true" for plaintext gRPC (default in-cluster)
+    """
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    if not endpoint:
+        logger.info("OTEL tracing disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set)")
+        return
+
+    service_name = os.getenv("OTEL_SERVICE_NAME", "gpu-booking-agent")
+    insecure = os.getenv("OTEL_EXPORTER_OTLP_INSECURE", "true").lower() == "true"
+
     try:
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
@@ -23,13 +31,13 @@ def setup_otel() -> None:
             OTLPSpanExporter,
         )
 
-        resource = Resource.create({"service.name": SERVICE_NAME})
+        resource = Resource.create({"service.name": service_name})
         provider = TracerProvider(resource=resource)
-        exporter = OTLPSpanExporter(endpoint=OTEL_ENDPOINT, insecure=True)
+        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
         provider.add_span_processor(BatchSpanExporter(exporter))
         trace.set_tracer_provider(provider)
 
-        logger.info("OTEL tracing enabled, exporting to %s", OTEL_ENDPOINT)
+        logger.info("OTEL tracing enabled, exporting to %s (insecure=%s)", endpoint, insecure)
     except ImportError:
         logger.warning(
             "OpenTelemetry packages not installed; tracing disabled."

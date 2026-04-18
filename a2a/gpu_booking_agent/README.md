@@ -81,10 +81,16 @@ Agent card available at `http://localhost:8001/.well-known/agent.json`.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GOOGLE_API_KEY` | (required for Gemini) | Gemini API key |
-| `ADK_MODEL` | `gemini-2.0-flash` | LLM model identifier |
+| `ADK_MODEL` | `gemini-2.5-flash` | LLM model identifier |
 | `MCP_URL` | `http://localhost:8000/mcp` | MCP tool server URL |
 | `HOST` | `0.0.0.0` | A2A server bind host |
 | `PORT` | `8001` | A2A server bind port |
+| `LOG_LEVEL` | `INFO` | Python logging level |
+| `OPENAI_API_BASE` | _(unset)_ | Base URL for OpenAI-compatible LLMs (Llama Stack, Ollama) |
+| `OPENAI_API_KEY` | _(unset)_ | API key for OpenAI-compatible endpoint |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | _(unset)_ | OTLP gRPC endpoint for tracing (disabled if unset) |
+| `OTEL_SERVICE_NAME` | `gpu-booking-agent` | Service name for OTEL traces |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `true` | Use plaintext gRPC to OTEL collector |
 
 ## Sub-Agents
 

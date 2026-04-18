@@ -71,16 +71,22 @@ var (
 	k8sHost           string
 	k8sToken          string
 	k8sHTTPClient     *http.Client
+	// nsOwnerLabel is the namespace label used to resolve the booking user from
+	// a Kueue workload's namespace. Override via KUEUE_NS_OWNER_LABEL env var.
+	nsOwnerLabel = envOrDefault("KUEUE_NS_OWNER_LABEL", "rhai-tmm.dev/owner")
 )
 
 // initK8sClient sets up the Kubernetes API client.
-// If KUBECONFIG is set, uses it directly (for remote cluster access).
+// If KUBECONFIG is explicitly set, it is used and failures are fatal for k8s features
+// (no silent fallback to in-cluster which would be the wrong cluster).
 // Otherwise tries in-cluster config first, then falls back to default kubeconfig paths.
 func initK8sClient() {
-	if os.Getenv("KUBECONFIG") != "" {
+	if kc := os.Getenv("KUBECONFIG"); kc != "" {
 		if initK8sFromKubeconfig() {
 			return
 		}
+		log.Printf("k8s client: KUBECONFIG=%s was set but failed to load; k8s features disabled (will NOT fall back to in-cluster)", kc)
+		return
 	}
 	if initK8sInCluster() {
 		return
@@ -127,6 +133,38 @@ func initK8sInCluster() bool {
 	return true
 }
 
+// kubeconfig represents the subset of a kubeconfig file we need.
+// Works for both JSON and YAML since the JSON tags match kubeconfig field names.
+type kubeconfig struct {
+	CurrentContext string             `json:"current-context"`
+	Clusters       []kubeconfigEntry  `json:"clusters"`
+	Users          []kubeconfigEntry  `json:"users"`
+	Contexts       []kubeconfigEntry  `json:"contexts"`
+}
+
+type kubeconfigEntry struct {
+	Name    string                 `json:"name"`
+	Cluster kubeconfigCluster      `json:"cluster,omitempty"`
+	User    kubeconfigUser         `json:"user,omitempty"`
+	Context kubeconfigContextValue `json:"context,omitempty"`
+}
+
+type kubeconfigCluster struct {
+	Server                string `json:"server"`
+	CertificateAuthorityData string `json:"certificate-authority-data"`
+	InsecureSkipTLSVerify bool   `json:"insecure-skip-tls-verify"`
+}
+
+type kubeconfigUser struct {
+	Token string `json:"token"`
+}
+
+type kubeconfigContextValue struct {
+	Cluster   string `json:"cluster"`
+	User      string `json:"user"`
+	Namespace string `json:"namespace"`
+}
+
 func initK8sFromKubeconfig() bool {
 	kubeconfigPath := os.Getenv("KUBECONFIG")
 	if kubeconfigPath == "" {
@@ -135,59 +173,37 @@ func initK8sFromKubeconfig() bool {
 
 	data, err := os.ReadFile(kubeconfigPath)
 	if err != nil {
+		log.Printf("k8s client: cannot read kubeconfig at %s: %v", kubeconfigPath, err)
 		return false
 	}
 
-	// Parse the kubeconfig YAML/JSON by extracting fields with simple parsing.
-	// Try JSON first (kubectl output), then extract YAML values.
-	var kc struct {
-		Clusters []struct {
-			Cluster struct {
-				Server                   string `json:"server"`
-				CertificateAuthorityData string `json:"certificate-authority-data"`
-				InsecureSkipTLSVerify    bool   `json:"insecure-skip-tls-verify"`
-			} `json:"cluster"`
-		} `json:"clusters"`
-		Users []struct {
-			User struct {
-				Token string `json:"token"`
-			} `json:"user"`
-		} `json:"users"`
-	}
-
-	if err := json.Unmarshal(data, &kc); err != nil {
-		// File is YAML -- convert simple kubeconfig YAML to JSON via kubectl if available,
-		// otherwise do a basic line-by-line parse for the fields we need.
-		out, cmdErr := exec.Command("kubectl", "config", "view", "--minify", "--flatten", "--raw", "-o", "json", "--kubeconfig", kubeconfigPath).Output()
-		if cmdErr != nil {
-			out, cmdErr = exec.Command("oc", "config", "view", "--minify", "--flatten", "--raw", "-o", "json", "--kubeconfig", kubeconfigPath).Output()
-		}
-		if cmdErr != nil {
-			// Fall back to simple YAML line parsing
-			return initK8sFromYAML(data)
-		}
-		if err := json.Unmarshal(out, &kc); err != nil {
-			log.Printf("k8s client: failed to parse kubeconfig JSON: %v", err)
-			return false
-		}
-	}
-
-	if len(kc.Clusters) == 0 || kc.Clusters[0].Cluster.Server == "" {
-		return false
-	}
-	if len(kc.Users) == 0 || kc.Users[0].User.Token == "" {
-		log.Println("k8s client: kubeconfig has no token (client cert auth not supported)")
+	kc, err := parseKubeconfig(data, kubeconfigPath)
+	if err != nil {
+		log.Printf("k8s client: failed to parse kubeconfig: %v", err)
 		return false
 	}
 
-	k8sHost = kc.Clusters[0].Cluster.Server
-	k8sToken = kc.Users[0].User.Token
+	clusterName, userName := resolveContext(kc)
+	cluster := findCluster(kc, clusterName)
+	user := findUser(kc, userName)
+
+	if cluster == nil || cluster.Server == "" {
+		log.Printf("k8s client: kubeconfig has no cluster (looked for %q)", clusterName)
+		return false
+	}
+	if user == nil || user.Token == "" {
+		log.Printf("k8s client: kubeconfig has no bearer token for user %q (only token auth is supported)", userName)
+		return false
+	}
+
+	k8sHost = cluster.Server
+	k8sToken = user.Token
 
 	tlsConfig := &tls.Config{}
-	if kc.Clusters[0].Cluster.InsecureSkipTLSVerify {
+	if cluster.InsecureSkipTLSVerify {
 		tlsConfig.InsecureSkipVerify = true
-	} else if caData := kc.Clusters[0].Cluster.CertificateAuthorityData; caData != "" {
-		caCert, err := base64.StdEncoding.DecodeString(caData)
+	} else if cluster.CertificateAuthorityData != "" {
+		caCert, err := base64.StdEncoding.DecodeString(cluster.CertificateAuthorityData)
 		if err == nil {
 			pool, _ := x509.SystemCertPool()
 			if pool == nil {
@@ -207,41 +223,180 @@ func initK8sFromKubeconfig() bool {
 	return true
 }
 
-// initK8sFromYAML parses a simple kubeconfig YAML without external tools.
-func initK8sFromYAML(data []byte) bool {
-	lines := strings.Split(string(data), "\n")
-	var server, token string
-	skipTLS := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "server:") {
-			server = strings.TrimSpace(strings.TrimPrefix(trimmed, "server:"))
-		} else if strings.HasPrefix(trimmed, "token:") {
-			token = strings.TrimSpace(strings.TrimPrefix(trimmed, "token:"))
-		} else if strings.HasPrefix(trimmed, "insecure-skip-tls-verify:") {
-			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "insecure-skip-tls-verify:"))
-			skipTLS = val == "true"
+func parseKubeconfig(data []byte, path string) (*kubeconfig, error) {
+	var kc kubeconfig
+
+	// Try JSON first
+	if err := json.Unmarshal(data, &kc); err == nil && len(kc.Clusters) > 0 {
+		return &kc, nil
+	}
+
+	// Try kubectl/oc to convert YAML to JSON
+	out, cmdErr := exec.Command("kubectl", "config", "view", "--minify", "--flatten", "--raw", "-o", "json", "--kubeconfig", path).Output()
+	if cmdErr != nil {
+		out, cmdErr = exec.Command("oc", "config", "view", "--minify", "--flatten", "--raw", "-o", "json", "--kubeconfig", path).Output()
+	}
+	if cmdErr == nil {
+		if err := json.Unmarshal(out, &kc); err == nil {
+			return &kc, nil
 		}
 	}
-	if server == "" || token == "" {
-		return false
+
+	// Neither kubectl nor oc available (e.g., container). Convert simple YAML
+	// keys to JSON by exploiting the fact that YAML is a superset of JSON and
+	// kubeconfig keys use the same names as our JSON tags. Replace YAML-only
+	// booleans and strip comments so json.Unmarshal can parse it.
+	yamlStr := string(data)
+	// YAML allows bare true/false without quotes; JSON requires them to be booleans.
+	// The kubeconfig struct uses bool fields so json.Unmarshal handles true/false fine.
+	// Just need to ensure the overall structure parses as JSON-compatible.
+	// Use a line-based converter for the simple kubeconfig subset.
+	return parseSimpleYAMLKubeconfig(yamlStr)
+}
+
+// parseSimpleYAMLKubeconfig handles the common kubeconfig YAML format that
+// kubectl/oc are not available to convert. It extracts clusters, users,
+// contexts, and current-context properly.
+func parseSimpleYAMLKubeconfig(yamlStr string) (*kubeconfig, error) {
+	kc := &kubeconfig{}
+	lines := strings.Split(yamlStr, "\n")
+
+	// Track which top-level section we're in
+	var section string // "clusters", "users", "contexts", ""
+	var currentCluster *kubeconfigEntry
+	var currentUser *kubeconfigEntry
+	var inClusterBlock, inUserBlock bool
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+
+		if indent == 0 {
+			inClusterBlock = false
+			inUserBlock = false
+			if strings.HasPrefix(trimmed, "current-context:") {
+				kc.CurrentContext = strings.TrimSpace(strings.TrimPrefix(trimmed, "current-context:"))
+			} else if trimmed == "clusters:" {
+				section = "clusters"
+			} else if trimmed == "users:" {
+				section = "users"
+			} else if trimmed == "contexts:" {
+				section = "contexts"
+			} else {
+				section = ""
+			}
+			continue
+		}
+
+		if strings.HasPrefix(trimmed, "- name:") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "- name:"))
+			switch section {
+			case "clusters":
+				kc.Clusters = append(kc.Clusters, kubeconfigEntry{Name: name})
+				currentCluster = &kc.Clusters[len(kc.Clusters)-1]
+				currentUser = nil
+			case "users":
+				kc.Users = append(kc.Users, kubeconfigEntry{Name: name})
+				currentUser = &kc.Users[len(kc.Users)-1]
+				currentCluster = nil
+			case "contexts":
+				kc.Contexts = append(kc.Contexts, kubeconfigEntry{Name: name})
+			}
+			inClusterBlock = false
+			inUserBlock = false
+			continue
+		}
+
+		if trimmed == "cluster:" {
+			inClusterBlock = true
+			inUserBlock = false
+			continue
+		}
+		if trimmed == "user:" {
+			inUserBlock = true
+			inClusterBlock = false
+			continue
+		}
+
+		if inClusterBlock && currentCluster != nil {
+			if strings.HasPrefix(trimmed, "server:") {
+				currentCluster.Cluster.Server = strings.TrimSpace(strings.TrimPrefix(trimmed, "server:"))
+			} else if strings.HasPrefix(trimmed, "insecure-skip-tls-verify:") {
+				val := strings.TrimSpace(strings.TrimPrefix(trimmed, "insecure-skip-tls-verify:"))
+				currentCluster.Cluster.InsecureSkipTLSVerify = val == "true"
+			} else if strings.HasPrefix(trimmed, "certificate-authority-data:") {
+				currentCluster.Cluster.CertificateAuthorityData = strings.TrimSpace(strings.TrimPrefix(trimmed, "certificate-authority-data:"))
+			}
+		}
+
+		if inUserBlock && currentUser != nil {
+			if strings.HasPrefix(trimmed, "token:") {
+				currentUser.User.Token = strings.TrimSpace(strings.TrimPrefix(trimmed, "token:"))
+			}
+		}
+
+		if section == "contexts" && len(kc.Contexts) > 0 {
+			ctx := &kc.Contexts[len(kc.Contexts)-1]
+			if strings.HasPrefix(trimmed, "cluster:") {
+				ctx.Context.Cluster = strings.TrimSpace(strings.TrimPrefix(trimmed, "cluster:"))
+			} else if strings.HasPrefix(trimmed, "user:") {
+				ctx.Context.User = strings.TrimSpace(strings.TrimPrefix(trimmed, "user:"))
+			} else if strings.HasPrefix(trimmed, "namespace:") {
+				ctx.Context.Namespace = strings.TrimSpace(strings.TrimPrefix(trimmed, "namespace:"))
+			}
+		}
 	}
 
-	k8sHost = server
-	k8sToken = token
-
-	tlsConfig := &tls.Config{}
-	if skipTLS {
-		tlsConfig.InsecureSkipVerify = true
+	if len(kc.Clusters) == 0 {
+		return nil, fmt.Errorf("no clusters found in kubeconfig YAML")
 	}
+	return kc, nil
+}
 
-	k8sHTTPClient = &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+func resolveContext(kc *kubeconfig) (clusterName, userName string) {
+	if kc.CurrentContext != "" {
+		for _, ctx := range kc.Contexts {
+			if ctx.Name == kc.CurrentContext {
+				return ctx.Context.Cluster, ctx.Context.User
+			}
+		}
 	}
+	// No context match: fall back to first cluster/user
+	if len(kc.Clusters) > 0 {
+		clusterName = kc.Clusters[0].Name
+	}
+	if len(kc.Users) > 0 {
+		userName = kc.Users[0].Name
+	}
+	return
+}
 
-	log.Printf("k8s client: using kubeconfig YAML (%s)", k8sHost)
-	return true
+func findCluster(kc *kubeconfig, name string) *kubeconfigCluster {
+	for i := range kc.Clusters {
+		if kc.Clusters[i].Name == name {
+			return &kc.Clusters[i].Cluster
+		}
+	}
+	if len(kc.Clusters) > 0 {
+		return &kc.Clusters[0].Cluster
+	}
+	return nil
+}
+
+func findUser(kc *kubeconfig, name string) *kubeconfigUser {
+	for i := range kc.Users {
+		if kc.Users[i].Name == name {
+			return &kc.Users[i].User
+		}
+	}
+	if len(kc.Users) > 0 {
+		return &kc.Users[0].User
+	}
+	return nil
 }
 
 func initKueueSync() {
@@ -355,7 +510,7 @@ func getNamespaceRequester(ns string) (string, error) {
 	if err := json.Unmarshal(body, &namespace); err != nil {
 		return "", fmt.Errorf("parsing namespace: %w", err)
 	}
-	owner := namespace.Metadata.Labels["rhai-tmm.dev/owner"]
+	owner := namespace.Metadata.Labels[nsOwnerLabel]
 	if owner == "" {
 		return ns, nil // fallback to namespace name
 	}
@@ -572,5 +727,12 @@ func kueueBookingID(namespace, resource string, slotIndex int, date string) stri
 		short = "mig1g"
 	}
 	return fmt.Sprintf("kueue-%s-%s-s%d-%s", namespace, short, slotIndex, date)
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 

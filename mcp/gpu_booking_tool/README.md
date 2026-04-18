@@ -36,19 +36,12 @@ uv run gpu_booking_tool.py
 
 The MCP server starts on `http://0.0.0.0:8000`.
 
-### Mock Mode (no backend required)
-
-```bash
-USE_MOCK_PROVIDER=true uv run gpu_booking_tool.py
-```
-
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BOOKING_API_URL` | `http://localhost:8080` | Go backend base URL |
 | `DEFAULT_USER` | `agent-user` | Default user for bookings |
-| `USE_MOCK_PROVIDER` | `false` | Use in-memory mock instead of Go backend |
 | `MCP_TRANSPORT` | `streamable-http` | MCP transport protocol |
 | `HOST` | `0.0.0.0` | Server bind host |
 | `PORT` | `8000` | Server bind port |

@@ -1,38 +1,29 @@
 """HTTP provider that calls the Go booking backend API with retry logic."""
 
+import json
 import logging
 from typing import Any
 
 import httpx
 
-from providers.base import BookingProvider
-
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
-RETRY_BACKOFF = 0.5
-
-
-class BackendError(Exception):
-    """Structured error from the Go backend."""
-
-    def __init__(self, status: int, code: str, detail: str):
-        self.status = status
-        self.code = code
-        self.detail = detail
-        super().__init__(f"{code}: {detail} (HTTP {status})")
 
 
 def _safe_json(resp: httpx.Response) -> dict[str, Any]:
-    """Parse response body as JSON, handling plain-text error bodies."""
+    """Parse response body as JSON, handling plain-text and malformed bodies."""
     ct = resp.headers.get("content-type", "")
     if "application/json" in ct:
-        return resp.json()
+        try:
+            return resp.json()
+        except (json.JSONDecodeError, ValueError):
+            return {"error": resp.text[:200].strip() or f"HTTP {resp.status_code}"}
     return {"error": resp.text.strip() or f"HTTP {resp.status_code}"}
 
 
-class HTTPProvider(BookingProvider):
-    """Calls the real Go backend at BOOKING_API_URL with retries."""
+class HTTPProvider:
+    """Calls the Go booking backend at BOOKING_API_URL with retries."""
 
     def __init__(self, base_url: str, timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
@@ -42,6 +33,10 @@ class HTTPProvider(BookingProvider):
             timeout=timeout,
             transport=transport,
         )
+
+    async def close(self):
+        """Close the underlying HTTP client. Call on shutdown."""
+        await self.client.aclose()
 
     def _headers(self, user: str) -> dict[str, str]:
         return {
@@ -71,6 +66,9 @@ class HTTPProvider(BookingProvider):
         except httpx.TimeoutException as exc:
             logger.error("Backend request timed out: %s", exc)
             return {"error": "backend_timeout", "detail": str(exc)}
+        except httpx.HTTPError as exc:
+            logger.error("HTTP transport error on %s %s: %s", method, path, exc)
+            return {"error": "transport_error", "detail": str(exc)}
 
         if resp.status_code in expected_errors:
             body = _safe_json(resp)

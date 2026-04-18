@@ -54,15 +54,15 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gpu-booking-tool
+          # Pin to a versioned tag for reproducible deploys (e.g., :v1.0.0)
           image: image-registry.openshift-image-registry.svc:5000/gpu-booking-test/gpu-booking-tool:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
               protocol: TCP
           env:
             - name: BOOKING_API_URL
               value: "http://gpu-booking-server:8080"
-            - name: USE_MOCK_PROVIDER
-              value: "false"
             - name: DEFAULT_USER
               value: "agent-user"
             - name: MCP_TRANSPORT

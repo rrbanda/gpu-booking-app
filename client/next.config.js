@@ -16,6 +16,7 @@ module.exports = (phase) => {
   // Add API rewrites for dev and standalone modes (not supported with static export)
   if (phase === PHASE_DEVELOPMENT_SERVER || output === 'standalone') {
     const apiUrl = process.env.API_URL || 'http://0.0.0.0:8080';
+    const agentUrl = process.env.AGENT_URL || 'http://localhost:8001';
     nextConfig.rewrites = async () => [
       {
         source: '/api/config',
@@ -24,6 +25,14 @@ module.exports = (phase) => {
       {
         source: '/docs',
         destination: '/docs/index.html',
+      },
+      {
+        source: '/api/agent',
+        destination: agentUrl,
+      },
+      {
+        source: '/api/agent/:path*',
+        destination: `${agentUrl}/:path*`,
       },
     ];
   }

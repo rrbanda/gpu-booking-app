@@ -8,14 +8,14 @@ booking operations as MCP tools for AI agents.
 import json
 import logging
 import os
-from typing import Any
 
 from fastmcp import FastMCP
 from pydantic import ValidationError
 
-from observability import setup_otel, get_tracer
+from starlette.responses import JSONResponse
+
+from observability import setup_otel
 from providers.http_provider import HTTPProvider
-from providers.mock import MockProvider
 from schemas import BookingConfig, BookingsListResponse
 
 logging.basicConfig(
@@ -24,21 +24,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-setup_otel()
-tracer = get_tracer()
-
-BOOKING_API_URL = os.getenv("BOOKING_API_URL", "http://localhost:8080")
-USE_MOCK = os.getenv("USE_MOCK_PROVIDER", "false").lower() == "true"
 DEFAULT_USER = os.getenv("DEFAULT_USER", "agent-user")
 
-if USE_MOCK:
-    logger.info("Using MockProvider (no backend required)")
-    provider = MockProvider()
-else:
-    logger.info("Using HTTPProvider targeting %s", BOOKING_API_URL)
-    provider = HTTPProvider(BOOKING_API_URL)
-
+provider: HTTPProvider | None = None
 mcp = FastMCP("GPU Booking Tool")
+
+
+def _init_provider():
+    """Initialize the HTTP provider and OTEL. Called once at startup."""
+    global provider
+    if provider is not None:
+        return
+
+    setup_otel()
+
+    booking_api_url = os.getenv("BOOKING_API_URL", "http://localhost:8080")
+    logger.info("Connecting to Go backend at %s", booking_api_url)
+    provider = HTTPProvider(booking_api_url)
 
 
 @mcp.tool()
@@ -108,14 +110,19 @@ async def check_availability(
         user: The username to authenticate as.
     """
     config = await provider.get_config()
+    if "error" in config:
+        return json.dumps({"error": "Failed to fetch config", "detail": config})
+
     bookings_data = await provider.list_bookings(user)
+    if "error" in bookings_data:
+        return json.dumps({"error": "Failed to fetch bookings", "detail": bookings_data})
 
     total_slots = 0
     resource_name = resource_type
     for res in config.get("resources", []):
-        if res["type"] == resource_type:
-            total_slots = res["count"]
-            resource_name = res["name"]
+        if res.get("type") == resource_type:
+            total_slots = res.get("count", 0)
+            resource_name = res.get("name", resource_type)
             break
 
     if total_slots == 0:
@@ -124,13 +131,18 @@ async def check_availability(
     reserved_slots: list[int] = []
     consumed_slots: list[int] = []
     for b in bookings_data.get("bookings", []):
-        if b["resource"] == resource_type and b["date"] == date:
-            if b["source"] == "reserved":
-                reserved_slots.append(b["slotIndex"])
-            else:
-                consumed_slots.append(b["slotIndex"])
+        try:
+            if b.get("resource") == resource_type and b.get("date") == date:
+                slot = b.get("slotIndex", -1)
+                if b.get("source") == "reserved":
+                    reserved_slots.append(slot)
+                else:
+                    consumed_slots.append(slot)
+        except (TypeError, AttributeError):
+            logger.warning("Skipping malformed booking entry: %s", b)
+            continue
 
-    free_count = total_slots - len(reserved_slots) - len(consumed_slots)
+    free_count = max(0, total_slots - len(reserved_slots) - len(consumed_slots))
     free_indices = [
         i for i in range(total_slots) if i not in reserved_slots and i not in consumed_slots
     ]
@@ -252,13 +264,14 @@ async def cancel_booking(
 
 def run_server():
     """Entry point for running the MCP server."""
+    _init_provider()
+
     transport = os.getenv("MCP_TRANSPORT", "streamable-http")
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
 
     @mcp.custom_route("/healthz", methods=["GET"])
     async def healthz(request):
-        from starlette.responses import JSONResponse
         return JSONResponse({"status": "ok"})
 
     mcp.run(transport=transport, host=host, port=port)

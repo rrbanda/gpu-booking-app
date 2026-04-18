@@ -6,10 +6,22 @@ bookings.db*
 client/node_modules/
 client/.next/
 client/out/
+*.tsbuildinfo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Secrets (never commit real credentials)
+**/secrets.yaml
 
 # OS
 .DS_Store
 
+# IDE / tools
 .vscode/
 .claude/
 .playwright-cli/

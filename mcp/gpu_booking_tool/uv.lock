@@ -396,7 +396,6 @@ dependencies = [
     { name = "opentelemetry-instrumentation-httpx" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic" },
-    { name = "pydantic-settings" },
 ]
 
 [package.optional-dependencies]
@@ -413,7 +412,6 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-httpx", specifier = ">=0.44b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
-    { name = "pydantic-settings", specifier = ">=2.8.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21.0" },
 ]
