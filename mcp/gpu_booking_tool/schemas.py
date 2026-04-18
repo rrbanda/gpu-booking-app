@@ -37,3 +37,32 @@ class Booking(BaseModel):
     end_hour: int = Field(24, alias="endHour")
 
     model_config = {"populate_by_name": True}
+
+
+class ActiveReservation(BaseModel):
+    user: str
+    namespace: str = ""
+    resource: str
+    count: int
+    gpu_equivalent: float = Field(0.0, alias="gpuEquivalent")
+
+
+class BookingsListResponse(BaseModel):
+    bookings: list[Booking] = []
+    active_reservations: list[ActiveReservation] = Field(
+        default_factory=list, alias="activeReservations"
+    )
+    current_user: str = Field("", alias="currentUser")
+
+    model_config = {"populate_by_name": True}
+
+
+class BulkBookResponse(BaseModel):
+    created: list[Booking] = []
+    failed: list[dict] = []
+    message: str = ""
+
+
+class ToolError(BaseModel):
+    error: str
+    detail: str | dict = ""

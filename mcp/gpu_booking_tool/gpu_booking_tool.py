@@ -11,12 +11,21 @@ import os
 from typing import Any
 
 from fastmcp import FastMCP
+from pydantic import ValidationError
 
+from observability import setup_otel, get_tracer
 from providers.http_provider import HTTPProvider
 from providers.mock import MockProvider
+from schemas import BookingConfig, BookingsListResponse
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 logger = logging.getLogger(__name__)
+
+setup_otel()
+tracer = get_tracer()
 
 BOOKING_API_URL = os.getenv("BOOKING_API_URL", "http://localhost:8080")
 USE_MOCK = os.getenv("USE_MOCK_PROVIDER", "false").lower() == "true"
@@ -44,7 +53,14 @@ async def get_config() -> str:
     checking availability or making bookings.
     """
     result = await provider.get_config()
-    return json.dumps(result, indent=2)
+    if "error" in result:
+        return json.dumps(result, indent=2)
+    try:
+        validated = BookingConfig.model_validate(result)
+        return validated.model_dump_json(by_alias=True, indent=2)
+    except ValidationError as exc:
+        logger.warning("Config response failed validation: %s", exc)
+        return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -61,7 +77,14 @@ async def list_bookings(user: str = DEFAULT_USER) -> str:
         user: The username to authenticate as (maps to X-Forwarded-User header).
     """
     result = await provider.list_bookings(user)
-    return json.dumps(result, indent=2)
+    if "error" in result:
+        return json.dumps(result, indent=2)
+    try:
+        validated = BookingsListResponse.model_validate(result)
+        return validated.model_dump_json(by_alias=True, indent=2)
+    except ValidationError as exc:
+        logger.warning("Bookings response failed validation: %s", exc)
+        return json.dumps(result, indent=2)
 
 
 @mcp.tool()
@@ -232,6 +255,12 @@ def run_server():
     transport = os.getenv("MCP_TRANSPORT", "streamable-http")
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
+
+    @mcp.custom_route("/healthz", methods=["GET"])
+    async def healthz(request):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"status": "ok"})
+
     mcp.run(transport=transport, host=host, port=port)
 
 

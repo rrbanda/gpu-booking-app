@@ -45,7 +45,7 @@ spec:
       labels:
         app: gpu-booking-tool
         kagenti.io/type: tool
-        kagenti.io/inject: "true"
+        kagenti.io/inject: enabled
     spec:
       serviceAccountName: gpu-booking-tool
       securityContext:
@@ -54,13 +54,15 @@ spec:
           type: RuntimeDefault
       containers:
         - name: gpu-booking-tool
-          image: gpu-booking-tool:latest
+          image: image-registry.openshift-image-registry.svc:5000/gpu-booking-test/gpu-booking-tool:latest
           ports:
             - containerPort: 8000
               protocol: TCP
           env:
             - name: BOOKING_API_URL
               value: "http://gpu-booking-server:8080"
+            - name: USE_MOCK_PROVIDER
+              value: "false"
             - name: DEFAULT_USER
               value: "agent-user"
             - name: MCP_TRANSPORT
@@ -71,28 +73,30 @@ spec:
               value: "8000"
             - name: LOG_LEVEL
               value: "INFO"
+            - name: OTEL_SERVICE_NAME
+              value: "gpu-booking-tool"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.kagenti-system.svc.cluster.local:4317"
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
+              memory: 256Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: 1Gi
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
-            runAsUser: 1001
-          livenessProbe:
-            httpGet:
-              path: /mcp
-              port: 8000
-            initialDelaySeconds: 10
-            periodSeconds: 30
           readinessProbe:
             httpGet:
-              path: /mcp
+              path: /healthz
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30

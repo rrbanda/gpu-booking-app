@@ -11,24 +11,34 @@ Architecture:
     └── reservation_agent (mutating operations)
 """
 
+import logging
 import os
 
 from google.adk.agents import LlmAgent
 from google.adk.tools.mcp_tool import McpToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnectionParams
 
+from gpu_booking_agent.observability import setup_otel
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+setup_otel()
+
 MCP_URL = os.getenv("MCP_URL", "http://localhost:8000/mcp")
-MODEL = os.getenv("ADK_MODEL", "gemini-2.0-flash")
+MODEL = os.getenv("ADK_MODEL", "gemini-2.5-flash")
 
 SYSTEM_INSTRUCTION = """\
 You are a GPU Booking Assistant that helps users manage GPU resource reservations
 on an OpenShift cluster with NVIDIA H200 GPUs and MIG (Multi-Instance GPU) partitions.
 
-## GPU Resource Types Available
-- **nvidia.com/gpu** (H200 Full GPU): 8 units, 1.0 GPU equivalent each
-- **nvidia.com/mig-3g.71gb** (MIG 3g.71gb): 8 units, 0.5 GPU equivalent each
-- **nvidia.com/mig-2g.35gb** (MIG 2g.35gb): 8 units, 0.25 GPU equivalent each
-- **nvidia.com/mig-1g.18gb** (MIG 1g.18gb): 16 units, 0.125 GPU equivalent each
+## IMPORTANT: Always discover resources dynamically
+- NEVER assume resource types, counts, or names.
+- Always call get_config FIRST to discover available GPU resources and their counts.
+- The cluster configuration may change; never rely on cached or memorized values.
 
 ## Booking Rules
 - Dates are in UTC (YYYY-MM-DD format).
@@ -40,7 +50,7 @@ on an OpenShift cluster with NVIDIA H200 GPUs and MIG (Multi-Instance GPU) parti
 - Descriptions are limited to 160 characters.
 
 ## Workflow
-1. Always call get_config first if you need to understand available resources.
+1. Always call get_config first to understand available resources.
 2. Before creating bookings, check availability for the requested date(s).
 3. For multi-resource or multi-day bookings, prefer bulk_book over individual calls.
 4. When cancelling, list bookings first to find the booking ID.
@@ -85,10 +95,6 @@ IMPORTANT RULES:
 - Show the user what was booked after success (resource type, count, dates, hours).
 - If a slot is taken, suggest checking availability for alternatives.
 """
-
-mcp_toolset = McpToolset(
-    connection_params=StreamableHTTPConnectionParams(url=MCP_URL),
-)
 
 availability_toolset = McpToolset(
     connection_params=StreamableHTTPConnectionParams(url=MCP_URL),
@@ -141,6 +147,11 @@ def main():
 
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8001"))
+
+    logger.info(
+        "Starting GPU Booking Agent on %s:%d, MCP_URL=%s, MODEL=%s",
+        host, port, MCP_URL, MODEL,
+    )
 
     a2a_app = to_a2a(root_agent, port=port)
     uvicorn.run(a2a_app, host=host, port=port)

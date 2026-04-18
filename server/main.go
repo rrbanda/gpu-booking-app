@@ -834,6 +834,10 @@ func main() {
 	initReservationSync()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 	mux.HandleFunc("/api/config", configHandler)
 	mux.HandleFunc("/api/bookings/bulk", bulkBookingHandler)
 	mux.HandleFunc("/api/bookings", bookingsHandler)
