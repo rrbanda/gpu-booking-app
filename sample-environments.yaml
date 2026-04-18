@@ -1,0 +1,35 @@
+---
+# Kagenti environment variable sets for GPU Booking components.
+# These can be referenced when deploying via the Kagenti UI.
+# Secrets should be created separately: kubectl create secret generic llm-api-keys --from-literal=GOOGLE_API_KEY=<key>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-booking-environments
+  labels:
+    kagenti.io/environment: "true"
+data:
+  # -- MCP Tool Server environment --
+  mcp-gpu-booking-tool.env: |
+    BOOKING_API_URL=http://gpu-booking-server:8080
+    DEFAULT_USER=agent-user
+    MCP_TRANSPORT=streamable-http
+    HOST=0.0.0.0
+    PORT=8000
+    LOG_LEVEL=INFO
+
+  # -- ADK Agent environment (Gemini) --
+  a2a-gpu-booking-agent-gemini.env: |
+    MCP_URL=http://gpu-booking-tool:8080/mcp
+    ADK_MODEL=gemini-2.0-flash
+    HOST=0.0.0.0
+    PORT=8001
+
+  # -- ADK Agent environment (Ollama / self-hosted) --
+  a2a-gpu-booking-agent-ollama.env: |
+    MCP_URL=http://gpu-booking-tool:8080/mcp
+    ADK_MODEL=ollama_chat/llama3.1
+    OPENAI_API_BASE=http://ollama-service:11434
+    OPENAI_API_KEY=not-needed
+    HOST=0.0.0.0
+    PORT=8001

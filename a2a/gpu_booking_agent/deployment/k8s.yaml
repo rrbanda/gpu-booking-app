@@ -1,0 +1,98 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-booking-agent
+  labels:
+    app: gpu-booking-agent
+    kagenti.io/type: agent
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gpu-booking-agent
+  labels:
+    app: gpu-booking-agent
+    kagenti.io/type: agent
+    protocol.kagenti.io/a2a: ""
+spec:
+  selector:
+    app: gpu-booking-agent
+  ports:
+    - name: a2a
+      protocol: TCP
+      port: 8080
+      targetPort: 8001
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-booking-agent
+  labels:
+    app: gpu-booking-agent
+    kagenti.io/type: agent
+    kagenti.io/framework: ADK
+    kagenti.io/workload-type: deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-booking-agent
+  template:
+    metadata:
+      labels:
+        app: gpu-booking-agent
+        kagenti.io/type: agent
+        kagenti.io/inject: "true"
+    spec:
+      serviceAccountName: gpu-booking-agent
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gpu-booking-agent
+          image: gpu-booking-agent:latest
+          ports:
+            - containerPort: 8001
+              protocol: TCP
+          env:
+            - name: MCP_URL
+              value: "http://gpu-booking-tool:8080/mcp"
+            - name: ADK_MODEL
+              value: "gemini-2.0-flash"
+            - name: GOOGLE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: llm-api-keys
+                  key: GOOGLE_API_KEY
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8001"
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsUser: 1001
+          livenessProbe:
+            httpGet:
+              path: /.well-known/agent.json
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /.well-known/agent.json
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
