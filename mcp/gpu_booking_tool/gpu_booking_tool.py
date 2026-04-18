@@ -29,10 +29,7 @@ else:
     logger.info("Using HTTPProvider targeting %s", BOOKING_API_URL)
     provider = HTTPProvider(BOOKING_API_URL)
 
-mcp = FastMCP(
-    "GPU Booking Tool",
-    description="MCP tools for managing GPU resource bookings on an OpenShift cluster with Kueue integration.",
-)
+mcp = FastMCP("GPU Booking Tool")
 
 
 @mcp.tool()
